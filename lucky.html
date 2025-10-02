@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>幸运大转盘 · 零后端完整版</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<style>
+:root{--w:320px;}
+body{margin:0;font:16px/1.5 "Microsoft YaHei";background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);display:flex;justify-content:center;align-items:center;min-height:100vh;flex-direction:column;}
+.container{background:#fff;border-radius:16px;padding:20px;width:90%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.3);text-align:center;}
+h1{margin:0 0 15px;font-size:24px;color:#333;}
+.wheel-box{position:relative;width:var(--w);height:var(--w);margin:0 auto 15px;}
+#wheel{width:100%;height:100%;border-radius:50%;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.25);transition:transform 4s cubic-bezier(.23,1,.32,1);}
+.pointer{position:absolute;top:-10px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:12px solid transparent;border-right:12px solid transparent;border-top:24px solid #ff4757;z-index:2;}
+button{padding:12px 36px;font-size:18px;color:#fff;background:linear-gradient(45deg,#ff6b6b,#ff4757);border:none;border-radius:30px;cursor:pointer;box-shadow:0 4px 15px rgba(255,107,107,.4);}
+button:disabled{background:#ccc;cursor:not-allowed;}
+#result{margin:15px 0;min-height:24px;font-weight:bold;}
+#stats{font-size:13px;color:#666;}
+#qrcode{margin:15px auto;width:180px;height:180px;}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🎉 幸运大转盘 · 零后端版</h1>
+
+  <div class="wheel-box">
+    <div class="pointer"></div>
+    <canvas id="wheel" width="320" height="320"></canvas>
+  </div>
+
+  <button id="spinBtn" onclick="startSpin()">开始抽奖</button>
+  <div id="result">今日剩余 <span id="remain">-</span> 次</div>
+  <div id="stats">一等奖 <span id="first">-</span> |
+              二等奖 <span id="second">-</span> |
+              三等奖 <span id="third">-</span></div>
+
+  <p style="font-size:12px;color:#999">扫码即可玩</p>
+  <div id="qrcode"></div>
+</div>
+
+<script>
+/* ================= 1. Firebase 配置（填自己的） ================= */
+const firebaseConfig = {
+  apiKey: "你的apiKey",
+  authDomain: "你的.firebaseapp.com",
+  projectId: "你的projectId",
+  storageBucket: "你的.appspot.com",
+  messagingSenderId: "xxx",
+  appId: "xxx"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+/* ================= 2. 全局变量 ================= */
+const LIMIT_PER_DAY = 3;               // 每人每日次数
+const prizeCfg = [                     // 画布顺序：逆时针 0° 开始
+  {name:"谢谢参与",color:"#96ceb4",prob:70,remaining:9999},
+  {name:"三等奖",color:"#4ecdc4",prob:24,remaining:24},
+  {name:"二等奖",color:"#feca57",prob:5,remaining:5},
+  {name:"一等奖",color:"#ff6b6b",prob:1,remaining:1}
+];
+let deviceId = localStorage.getItem("deviceId") || 
+               ("u_"+Math.random().toString(36).slice(2)+Date.now().toString(36));
+localStorage.setItem("deviceId",deviceId);
+let remainToday = LIMIT_PER_DAY;
+let isSpinning = false;
+const prizeRef = db.collection("prize").doc("remaining");
+const logRef   = db.collection("draw_log").doc(deviceId);
+
+/* ================= 3. 画转盘 ================= */
+const canvas = document.getElementById("wheel");
+const ctx = canvas.getContext("2d");
+const RAD = Math.PI*2/360;
+function drawWheel(){
+  const ang = 360/prizeCfg.length;
+  ctx.clearRect(0,0,320,320);
+  prizeCfg.forEach((p,i)=>{
+    ctx.beginPath();
+    ctx.moveTo(160,160);
+    ctx.arc(160,160,160, (i*ang-90)*RAD, ((i+1)*ang-90)*RAD );
+    ctx.closePath();
+    ctx.fillStyle = p.color;
+    ctx.fill();
+    ctx.save();
+    ctx.translate(160,160);
+    ctx.rotate((i*ang+ang/2-90)*RAD);
+    ctx.fillStyle="#fff";ctx.font="bold 16px sans-serif";ctx.textAlign="center";
+    ctx.fillText(p.name, 120, 6);
+    ctx.restore();
+  });
+}
+drawWheel();
+
+/* ================= 4. 实时库存 & 今日次数 ================= */
+function syncData(){
+  // 库存
+  prizeRef.onSnapshot(doc=>{
+    if(doc.exists){
+      const d=doc.data();
+      prizeCfg[1].remaining = d.third;
+      prizeCfg[2].remaining = d.second;
+      prizeCfg[3].remaining = d.first;
+      updateUI();
+    }
+  });
+  // 今日次数
+  const today = new Date().toISOString().slice(0,10);
+  logRef.get().then(doc=>{
+    if(doc.exists && doc.data().date===today){
+      remainToday = LIMIT_PER_DAY - doc.data().count;
+    }else{
+      remainToday = LIMIT_PER_DAY;
+    }
+    updateUI();
+  });
+}
+function updateUI(){
+  document.getElementById("first").textContent  = prizeCfg[3].remaining;
+  document.getElementById("second").textContent = prizeCfg[2].remaining;
+  document.getElementById("third").textContent  = prizeCfg[1].remaining;
+  document.getElementById("remain").textContent = remainToday;
+  document.getElementById("spinBtn").disabled = isSpinning || remainToday<=0;
+}
+syncData();
+
+/* ================= 5. 抽奖 ================= */
+async function startSpin(){
+  if(isSpinning||remainToday<=0) return;
+  isSpinning=true; updateUI();
+  document.getElementById("result").textContent="抽奖中...";
+
+  // 5.1 先抽中奖项（按剩余库存加权）
+  const totalRemain = prizeCfg.reduce((s,c)=>s+c.remaining,0);
+  let r=Math.random()*totalRemain,idx=0;
+  for(let i=0;i<prizeCfg.length;i++){
+    r-= prizeCfg[i].remaining;
+    if(r<=0){idx=i;break;}
+  }
+  const prize = prizeCfg[idx];
+
+  // 5.2 事务减库存（仅中奖且非谢谢参与）
+  if(idx!==0){
+    try{
+      await db.runTransaction(async t=>{
+        const doc=await t.get(prizeRef);
+        const key=["third","second","first"][idx-1];
+        if(doc.data()[key]<=0) throw "库存不足";
+        t.update(prizeRef,{[key]:doc.data()[key]-1});
+      });
+    }catch(e){
+      document.getElementById("result").textContent="奖品已发完！"; isSpinning=false; updateUI(); return;
+    }
+  }
+
+  // 5.3 累加个人次数
+  const today = new Date().toISOString().slice(0,10);
+  await logRef.set({date:today, count: LIMIT_PER_DAY - remainToday +1},{merge:true});
+  remainToday--;
+
+  // 5.4 旋转动画
+  const ang = 360/prizeCfg.length;
+  const target = (idx*ang + ang/2 -90 + 3600 + Math.random()*ang*0.8)|0;
+  canvas.style.transform=`rotate(${target}deg)`;
+
+  setTimeout(()=>{
+    isSpinning=false; updateUI();
+    document.getElementById("result").innerHTML=
+      idx===0 ? "😊 谢谢参与，明日再来！" : `🎉 恭喜获得：${prize.name}！`;
+  },4200);
+}
+
+/* ================= 6. 现场二维码（页面地址） ================= */
+new QRCode(document.getElementById("qrcode"),{
+  text: location.href.replace(/^http:/,"https:"),
+  width:180,height:180,colorDark:"#000",colorLight:"#fff",correctLevel:QRCode.CorrectLevel.H
+});
+</script>
+</body>
+</html>
